@@ -1,5 +1,6 @@
 import {
   Injectable,
+  Inject,
   Logger,
   OnModuleInit,
   Optional,
@@ -14,10 +15,21 @@ import { ethers } from 'ethers';
 import { Keypair } from '@stellar/stellar-sdk';
 import * as nacl from 'tweetnacl';
 import { AdminService } from '../admin/admin.service';
+import { RedisClientProvider, IRedisClient } from '../config/redis.config';
 import { IpfsService } from '../ipfs/ipfs.service';
 import { Call } from '../calls/call.entity';
 import { AuditLog, AuditLogAction } from './audit-log.entity';
 import { IKeySigner, LocalWalletSigner, KmsSigner } from './key-signer';
+import {
+  IStellarKeySigner,
+  KmsEd25519Signer,
+  LocalEd25519Signer,
+  StellarResolutionPayload,
+  StellarSignature,
+  assertValidResolutionPayload,
+  buildCanonicalResolutionPayload,
+  digestResolutionPayload,
+} from './key-signer';
 import {
   QuorumConsensusService,
   ResolutionPayload,
@@ -28,6 +40,13 @@ import {
   StalenessViolation,
 } from './price-staleness.service';
 import { LedgerSchedulerService } from './ledger-scheduler.service';
+import {
+  AggregatedPrice,
+  PriceProvider,
+  PRICE_PROVIDERS,
+  PriceQuote,
+  confidenceForProviderCount,
+} from './providers/price-provider.interface';
 
 // ─── Retry configuration ────────────────────────────────────────────────────
 
@@ -251,15 +270,47 @@ export interface QuorumOutcomeResult {
 export class OracleService implements OnModuleInit {
   private readonly logger = new Logger(OracleService.name);
 
+  private readonly priceProviders: PriceProvider[];
+  private readonly redisClientProvider?: RedisClientProvider;
+  private readonly inMemoryPriceCache = new Map<
+    string,
+    { value: AggregatedPrice; expiresAt: number }
+  >();
+
+  private get redisClient(): IRedisClient | null {
+    return this.redisClientProvider?.getClient() ?? null;
+  }
+
+  private static readonly PRICE_CACHE_TTL_MS = 10_000;
+  private static readonly PRICE_CACHE_PREFIX = 'oracle:price:';
+  private static readonly MAX_QUOTE_AGE_MS = 5 * 60 * 1000;
+  private static readonly OUTLIER_DEVIATION = 0.1;
+
   private signer: ethers.Wallet;
   private stellarKeypair: Keypair;
 
   /** KMS/local abstraction used by signEIP712() — see key-signer.ts (BE-02). */
   private activeSigner?: IKeySigner;
 
+  /**
+   * BE-12: ed25519 signer for Soroban submissions. An HSM/KMS-backed signer in
+   * production (`STELLAR_KMS_URL` set — no secret key ever enters this
+   * process), the local secret key in development.
+   */
+  private activeStellarSigner?: IStellarKeySigner;
+
+  /** Reports where the ed25519 key lives, for audit logs and the admin API. */
+  get stellarSignerKind(): 'local' | 'hsm' | 'none' {
+    return this.activeStellarSigner?.kind ?? 'none';
+  }
+
   constructor(
     private configService: ConfigService,
     private adminService: AdminService,
+    @Optional() @Inject(PRICE_PROVIDERS) priceProviders?: PriceProvider[],
+    @Optional()
+    @Inject(RedisClientProvider)
+    redisClientProvider?: RedisClientProvider,
     @Optional() private readonly ipfsService?: IpfsService,
     @Optional() private readonly eventEmitter?: EventEmitter2,
     @Optional()
@@ -288,6 +339,9 @@ export class OracleService implements OnModuleInit {
      */
     @Optional() private readonly ledgerScheduler?: LedgerSchedulerService,
   ) {
+    this.priceProviders = priceProviders ?? [];
+    this.redisClientProvider = redisClientProvider;
+
     const privateKey = this.configService.get<string>('ORACLE_PRIVATE_KEY');
     if (privateKey) {
       this.signer = new ethers.Wallet(privateKey);
@@ -309,6 +363,23 @@ export class OracleService implements OnModuleInit {
       );
     } else if (privateKey) {
       this.activeSigner = new LocalWalletSigner(privateKey);
+    }
+
+    // BE-12: an HSM/KMS signer wins over the in-process secret key so a
+    // production deployment can be configured to *refuse* to hold a seed.
+    const stellarKmsUrl = this.configService.get<string>('STELLAR_KMS_URL');
+    if (stellarKmsUrl) {
+      this.activeStellarSigner = new KmsEd25519Signer(
+        stellarKmsUrl,
+        this.configService.get<string>('STELLAR_KMS_KEY_ID', ''),
+        this.configService.get<string>('STELLAR_KMS_API_TOKEN'),
+      );
+      this.logger.log(
+        'Stellar oracle signing delegated to an external HSM/KMS — ' +
+          'no ed25519 secret key is held in this process',
+      );
+    } else if (stellarSecretKey) {
+      this.activeStellarSigner = new LocalEd25519Signer(stellarSecretKey);
     }
   }
 
@@ -1261,6 +1332,81 @@ export class OracleService implements OnModuleInit {
   // ─── Stellar (ed25519) signing ────────────────────────────────────────────
 
   /**
+   * BE-012: the canonical resolution payload the Soroban `OutcomeManager`
+   * contract verifies. Exposed on the service so the relayer (BE-14) and the
+   * tests agree on one byte layout.
+   */
+  buildResolutionPayload(
+    callId: number,
+    outcomeIndex: 0 | 1 | boolean,
+    finalPrice: number | string | bigint,
+    timestamp: number,
+  ): StellarResolutionPayload {
+    const payload: StellarResolutionPayload = {
+      callId,
+      outcomeIndex,
+      finalPrice,
+      timestamp,
+    };
+    // Fail fast at the call site as well as inside the signer: an invalid
+    // payload must never reach a signing operation, HSM or local alike.
+    assertValidResolutionPayload(payload);
+    return payload;
+  }
+
+  /** The exact 33 bytes the contract rebuilds before `ed25519_verify`. */
+  buildCanonicalPayload(payload: StellarResolutionPayload): Buffer {
+    return buildCanonicalResolutionPayload(payload);
+  }
+
+  /** sha256 of the canonical payload — the audit-log / idempotency key. */
+  digestResolution(payload: StellarResolutionPayload): string {
+    return digestResolutionPayload(payload);
+  }
+
+  /**
+   * BE-012: signs a Soroban resolution vote.
+   *
+   * Signs the canonical 33-byte payload (not a human-readable string), so the
+   * 64-byte signature is directly consumable by
+   * `env.crypto().ed25519_verify(&oracle_pubkey, &message, &signature)` inside
+   * `submit_outcome`.
+   */
+  async signResolution(
+    payload: StellarResolutionPayload,
+  ): Promise<StellarSignature> {
+    if (this.adminService.isPaused()) {
+      throw new ServiceUnavailableException(
+        'Protocol is paused. Oracle signatures are disabled.',
+      );
+    }
+    if (!this.activeStellarSigner) {
+      throw new Error(
+        'Stellar oracle signer not configured (no STELLAR_ORACLE_SECRET_KEY or STELLAR_KMS_URL)',
+      );
+    }
+
+    const signature = await this.activeStellarSigner.sign(payload);
+    this.logger.log(
+      `Signed resolution payload ${signature.payloadHash} for call ${payload.callId} ` +
+        `(outcome ${payload.outcomeIndex === true ? 1 : payload.outcomeIndex === false ? 0 : payload.outcomeIndex}, ${this.activeStellarSigner.kind} key)`,
+    );
+    return signature;
+  }
+
+  /** Convenience wrapper: build the payload, then sign it. */
+  async signResolutionForCall(
+    callId: number,
+    outcome: boolean,
+    finalPrice: number | string | bigint,
+    timestamp: number,
+  ): Promise<StellarSignature> {
+    return this.signResolution(
+      this.buildResolutionPayload(callId, outcome, finalPrice, timestamp),
+    );
+  }
+
+  /**
    * Sign outcome with ed25519 for Stellar/Soroban verification.
    *
    * Message format: BackIt:Outcome:{callId}:{outcome}:{finalPrice}:{timestamp}
@@ -1268,6 +1414,10 @@ export class OracleService implements OnModuleInit {
    *   - outcome:    'true' or 'false' (as string)
    *   - finalPrice: the final price as a number
    *   - timestamp:  unix timestamp in seconds
+   *
+   * @deprecated Legacy ASCII framing kept for callers that verify off-chain
+   * with the `verifyEd25519` helper. On-chain submissions must use
+   * `signResolution`, which signs the canonical payload the contract rebuilds.
    *
    * @returns 64-byte Buffer (compatible with Soroban BytesN<64>)
    */
@@ -1400,5 +1550,175 @@ export class OracleService implements OnModuleInit {
     }
 
     return this.signOutcome(callId, outcome, finalPrice, timestamp);
+  }
+
+  async getAggregatedPrice(symbol: string): Promise<AggregatedPrice | null> {
+    const key = symbol.trim().toUpperCase();
+    if (!key) return null;
+
+    const cached = await this.readAggregatedCache(key);
+    if (cached) return cached;
+
+    const settled = await Promise.allSettled(
+      this.priceProviders.map((provider) => provider.fetchQuote(key)),
+    );
+
+    const quotes: PriceQuote[] = [];
+    for (const result of settled) {
+      if (result.status === 'fulfilled' && result.value !== null) {
+        quotes.push(result.value);
+      }
+    }
+
+    const fresh = quotes.filter(
+      (quote) => Date.now() - quote.timestamp <= OracleService.MAX_QUOTE_AGE_MS,
+    );
+
+    if (fresh.length === 0) {
+      return null;
+    }
+
+    const filtered = this.rejectOutliers(fresh);
+    if (filtered.length === 0) {
+      return null;
+    }
+
+    const price = this.volumeWeightedMedian(filtered);
+    if (price === null) {
+      return null;
+    }
+
+    const aggregated: AggregatedPrice = {
+      symbol: key,
+      price,
+      sources: filtered.map((quote) => quote.source),
+      timestamp: Date.now(),
+      confidence: confidenceForProviderCount(filtered.length),
+    };
+
+    await this.writeAggregatedCache(key, aggregated);
+    return aggregated;
+  }
+
+  private rejectOutliers(quotes: PriceQuote[]): PriceQuote[] {
+    if (quotes.length < 3) {
+      return quotes;
+    }
+
+    const prices = quotes.map((quote) => quote.price).sort((a, b) => a - b);
+    const mid = prices.length >> 1;
+    const median =
+      prices.length % 2 === 1
+        ? prices[mid]
+        : (prices[mid - 1] + prices[mid]) / 2;
+
+    return quotes.filter(
+      (quote) =>
+        Math.abs(quote.price - median) / median <=
+        OracleService.OUTLIER_DEVIATION,
+    );
+  }
+
+  private volumeWeightedMedian(quotes: PriceQuote[]): number | null {
+    if (quotes.length === 0) return null;
+
+    const usable = quotes.filter(
+      (quote) => Number.isFinite(quote.price) && quote.price > 0,
+    );
+    if (usable.length === 0) return null;
+
+    const totalVolume = usable.reduce(
+      (acc, quote) => acc + Math.max(0, quote.volume24h),
+      0,
+    );
+
+    if (totalVolume <= 0) {
+      return this.simpleMedian(usable.map((quote) => quote.price));
+    }
+
+    const sorted = [...usable].sort((a, b) => a.price - b.price);
+    const half = totalVolume / 2;
+    let cumulative = 0;
+
+    for (const quote of sorted) {
+      cumulative += Math.max(0, quote.volume24h);
+      if (cumulative >= half) {
+        return quote.price;
+      }
+    }
+
+    return sorted[sorted.length - 1].price;
+  }
+
+  private simpleMedian(prices: number[]): number {
+    const sorted = [...prices].sort((a, b) => a - b);
+    const mid = sorted.length >> 1;
+    return sorted.length % 2 === 1
+      ? sorted[mid]
+      : (sorted[mid - 1] + sorted[mid]) / 2;
+  }
+
+  private async readAggregatedCache(
+    key: string,
+  ): Promise<AggregatedPrice | null> {
+    const prefixed = `${OracleService.PRICE_CACHE_PREFIX}${key}`;
+
+    const memoryEntry = this.inMemoryPriceCache.get(prefixed);
+    if (memoryEntry) {
+      if (memoryEntry.expiresAt > Date.now()) {
+        return memoryEntry.value;
+      }
+      this.inMemoryPriceCache.delete(prefixed);
+    }
+
+    if (!this.redisClient) {
+      return null;
+    }
+
+    try {
+      const raw = await this.redisClient.get(prefixed);
+      if (!raw) {
+        return null;
+      }
+      const parsed = JSON.parse(raw) as AggregatedPrice;
+      this.inMemoryPriceCache.set(prefixed, {
+        value: parsed,
+        expiresAt: Date.now() + OracleService.PRICE_CACHE_TTL_MS,
+      });
+      return parsed;
+    } catch (err) {
+      this.logger.warn(
+        `Price cache read failed for ${key}: ${(err as Error).message}`,
+      );
+      return null;
+    }
+  }
+
+  private async writeAggregatedCache(
+    key: string,
+    value: AggregatedPrice,
+  ): Promise<void> {
+    const prefixed = `${OracleService.PRICE_CACHE_PREFIX}${key}`;
+    const expiresAt = Date.now() + OracleService.PRICE_CACHE_TTL_MS;
+
+    this.inMemoryPriceCache.set(prefixed, { value, expiresAt });
+
+    if (!this.redisClient) {
+      return;
+    }
+
+    try {
+      await this.redisClient.set(
+        prefixed,
+        JSON.stringify(value),
+        'NX',
+        'PX',
+        OracleService.PRICE_CACHE_TTL_MS,
+      );
+    } catch (err) {
+      this.logger.warn(
+        `Price cache write failed for ${key}: ${(err as Error).message}`,
+      );
+    }
   }
 }

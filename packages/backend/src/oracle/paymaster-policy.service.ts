@@ -5,6 +5,14 @@ import { Cache } from 'cache-manager';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * How long relayer settlement records are kept.
+ *
+ * 90 days: long enough to cover a dispute window plus a slow audit, short
+ * enough that the cache does not grow without bound.
+ */
+const RELAYER_TX_TTL_MS = 90 * DAY_MS;
+
 export interface PaymasterBudgetSnapshot {
   dailyAllowance: number;
   perAddressCap: number;
@@ -151,18 +159,13 @@ export class PaymasterPolicyService {
   }
 
   private async disable(normalized: string): Promise<void> {
-    await this.cacheManager.set(
-      this.disabledKey(normalized),
-      true,
-      DAY_MS,
-    );
+    await this.cacheManager.set(this.disabledKey(normalized), true, DAY_MS);
     this.logger.warn(`Paymaster auto-disabled for address ${normalized}`);
   }
 
   private async registerAddress(normalized: string): Promise<void> {
     const key = `${this.keyPrefix}addresses`;
-    const known =
-      (await this.cacheManager.get<string[]>(key)) ?? [];
+    const known = (await this.cacheManager.get<string[]>(key)) ?? [];
     if (!known.includes(normalized)) {
       known.push(normalized);
       await this.cacheManager.set(key, known, DAY_MS);
@@ -171,6 +174,77 @@ export class PaymasterPolicyService {
 
   private async trackDaily(amount: number): Promise<void> {
     const current = await this.cacheManager.get<number>(this.dailyKey());
-    await this.cacheManager.set(this.dailyKey(), (current ?? 0) + amount, DAY_MS);
+    await this.cacheManager.set(
+      this.dailyKey(),
+      (current ?? 0) + amount,
+      DAY_MS,
+    );
+  }
+
+  // ─── Relayer fee accounting (BE-014) ───────────────────────────────────────
+
+  /**
+   * Record the on-chain transaction hash for a Stellar resolution.
+   *
+   * Deliberately durable rather than cached: the hash is the only durable link
+   * between our database row and the ledger, and losing it means a resolution
+   * that settled on-chain looks unresolved in the UI. Kept under a long TTL and
+   * a `settled:` prefix so it cannot be confused with the daily gas counters
+   * above, which are meant to expire at midnight.
+   */
+  async recordRelayerFee(callOnchainId: string, txHash: string): Promise<void> {
+    const key = `${this.keyPrefix}settled:${callOnchainId}`;
+    const previous = await this.cacheManager.get<string>(key);
+    if (previous && previous !== txHash) {
+      // Two different hashes for one call means the idempotency guard was
+      // bypassed. This is worth shouting about rather than overwriting.
+      this.logger.error(
+        `Relayer produced a second tx hash for call ${callOnchainId}: ` +
+          `${previous} then ${txHash}`,
+      );
+      return;
+    }
+    await this.cacheManager.set(key, txHash, RELAYER_TX_TTL_MS);
+  }
+
+  /** Look up the transaction hash recorded for a settled resolution. */
+  async getRelayerTxHash(callOnchainId: string): Promise<string | null> {
+    return this.cacheManager.get<string>(
+      `${this.keyPrefix}settled:${callOnchainId}`,
+    );
+  }
+
+  /**
+   * Record that the relayer account fell below its XLM floor.
+   *
+   * Persisted rather than merely logged so an operator landing later can see
+   * that resolutions were being refused for lack of funds — otherwise the
+   * symptom (calls stuck unresolved) has no visible cause.
+   */
+  async recordRelayerShortfall(
+    publicKey: string,
+    balanceXlm: number,
+    minimumXlm: number,
+  ): Promise<void> {
+    this.logger.error(
+      `Relayer account ${publicKey} at ${balanceXlm} XLM, below the ` +
+        `${minimumXlm} XLM floor`,
+    );
+    const key = `${this.keyPrefix}relayer-shortfall`;
+    await this.cacheManager.set(
+      key,
+      { publicKey, balanceXlm, minimumXlm, at: new Date().toISOString() },
+      RELAYER_TX_TTL_MS,
+    );
+  }
+
+  /** Last recorded relayer shortfall, or null if the account is funded. */
+  async getRelayerShortfall(): Promise<{
+    publicKey: string;
+    balanceXlm: number;
+    minimumXlm: number;
+    at: string;
+  } | null> {
+    return this.cacheManager.get(`${this.keyPrefix}relayer-shortfall`);
   }
 }

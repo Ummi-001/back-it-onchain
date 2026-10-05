@@ -25,6 +25,8 @@ export enum AuditLogAction {
   DISPUTE_OVERTURNED = 'dispute.overturned',
   DISPUTE_CONFIRMED = 'dispute.confirmed',
   ORACLE_KEY_ROTATED = 'oracle.key_rotated',
+  /** BE-12: an ed25519 signature over a canonical Soroban resolution payload. */
+  ORACLE_RESOLUTION_SIGNED = 'oracle.resolution_signed',
 }
 
 @Entity('audit_logs')
@@ -60,7 +62,6 @@ export class AuditLog {
 
   @Column({ type: 'jsonb', nullable: true })
   payload: Record<string, unknown>;
-
 
   /** Chain the action relates to ('base' | 'stellar'), when applicable. */
   @Column({ nullable: true })

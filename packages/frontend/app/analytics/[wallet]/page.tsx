@@ -6,6 +6,7 @@ import { useAnalytics } from '../../../src/hooks/useAnalytics';
 import { ReputationRadar } from '../../../src/components/ReputationRadar';
 import { AccuracyChart } from '../../../src/components/AccuracyChart';
 import { StakingVolumeBars } from '../../../src/components/StakingVolumeBars';
+import { CreatorEarningsDashboard } from '../../../src/components/CreatorEarningsDashboard';
 
 /**
  * FE-23 — Analytics & Reputation Score Visualization.
@@ -55,6 +56,7 @@ export default function AnalyticsPage() {
           </section>
         </div>
       )}
+      <CreatorEarningsDashboard wallet={wallet} />
     </main>
   );
 }

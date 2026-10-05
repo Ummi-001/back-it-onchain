@@ -23,6 +23,7 @@ export interface WalletAdapter {
   connect(): Promise<string>;
   disconnect(): void;
   signTransaction(tx: Transaction): Promise<string>;
+  signChallenge(transactionXdr: string, networkPassphrase: string): Promise<string>;
   getPublicKey(): string | null;
   isConnected: boolean;
 }
@@ -200,11 +201,19 @@ export class StellarWalletAdapter implements WalletAdapter {
     }
   }
 
-  /**
-   * Get the current public key (Stellar address)
-   *
-   * @returns string | null - The public key if connected, null otherwise
-   */
+  async signChallenge(transactionXdr: string, networkPassphrase: string): Promise<string> {
+    if (!this.connected || !this.publicKey) {
+      throw new Error("Wallet not connected. Please connect first.");
+    }
+    const result = await freighterSignTransaction(transactionXdr, {
+      networkPassphrase,
+      address: this.publicKey,
+    });
+    if (result.error) throw new Error(result.error);
+    if (!result.signedTxXdr) throw new Error("Failed to sign SEP-10 challenge");
+    return result.signedTxXdr;
+  }
+
   getPublicKey(): string | null {
     return this.publicKey;
   }

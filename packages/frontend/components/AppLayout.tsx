@@ -1,5 +1,7 @@
 import { Nav } from "@/components/nav";
 import { OfflineBanner } from "@/src/components/OfflineBanner";
+import { Header } from "@/src/components/Header";
+import { RpcHealthIndicator } from "@/src/components/RpcHealthIndicator";
 import { StakingSlipDrawer } from "@/src/components/StakingSlipDrawer";
 import { StakingSlipProvider } from "@/src/context/StakingSlipContext";
 import { WidgetErrorBoundary } from "@/src/components/WidgetErrorBoundary";
@@ -11,10 +13,17 @@ export function AppLayout({
     children: React.ReactNode,
     rightSidebar?: React.ReactNode
 }) {
+    const rpcEndpoints = [
+        process.env.NEXT_PUBLIC_SOROBAN_RPC,
+        process.env.NEXT_PUBLIC_SOROBAN_RPC_FALLBACK,
+    ].filter((url): url is string => Boolean(url)).map((url, index) => ({ id: index === 0 ? 'primary' : 'fallback', url, network: 'TESTNET' }));
+
     return (
         <StakingSlipProvider>
             <div className="min-h-screen bg-background">
+                <Header />
                 <OfflineBanner />
+                {rpcEndpoints.length > 0 ? <div className="flex justify-end px-4 py-1"><RpcHealthIndicator endpoints={rpcEndpoints} /></div> : null}
                 <div className="max-w-7xl mx-auto flex justify-center min-h-screen">
                     {/*
                       Each region gets its own boundary so a crash in one does not

@@ -10,7 +10,7 @@ import { ChainSelector } from "@/components/ChainSelector";
 import { useChain } from "@/components/ChainProvider";
 import { NotificationBell } from "@/components/NotificationBell";
 import { showInfoToast } from "@/components/tx-toast";
-import { SearchPalette } from "@/components/SearchPalette";
+import { OmniboxSearch } from "@/src/components/OmniboxSearch";
 
 import { cn } from "@/lib/utils";
 import {
@@ -46,7 +46,7 @@ export function Nav() {
 
   return (
     <>
-      <SearchPalette />
+      <OmniboxSearch />
       {/* Desktop Sidebar */}
       <nav className="hidden md:flex sticky top-0 h-screen w-64 border-r border-border flex-col p-4 bg-background z-50 shrink-0">
         <div className="mb-8 px-2 flex justify-between items-center">

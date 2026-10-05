@@ -1,15 +1,18 @@
 "use client";
 
-import { ExternalLink, Shield, ShieldCheck, FileText, Link as LinkIcon } from "lucide-react";
+import { useState } from "react";
+import { ExternalLink, Shield, ShieldCheck, FileText } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
 import { type ProvenanceData, formatPrice, getExplorerUrl, getIPFSUrl } from "@/lib/verify-eip712";
+import { OracleSignatureInspector } from "@/src/components/OracleSignatureInspector";
 
 interface EvidencePanelProps {
   provenance: ProvenanceData;
 }
 
 export function EvidencePanel({ provenance }: EvidencePanelProps) {
+  const [inspecting, setInspecting] = useState(false);
   return (
     <Card data-testid="evidence-panel">
       <CardHeader>
@@ -97,7 +100,9 @@ export function EvidencePanel({ provenance }: EvidencePanelProps) {
             <Badge tone="yellow">Unverified</Badge>
           )}
         </div>
+        {provenance.stellarEvidence ? <button type="button" onClick={() => setInspecting(true)} className="text-xs font-medium text-primary hover:underline">Inspect raw signature</button> : null}
       </CardContent>
+      {inspecting ? <OracleSignatureInspector provenance={provenance} onClose={() => setInspecting(false)} /> : null}
     </Card>
   );
 }

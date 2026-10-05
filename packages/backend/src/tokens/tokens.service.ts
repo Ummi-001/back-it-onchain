@@ -1,6 +1,7 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { Cache, CACHE_MANAGER } from '@nestjs/cache-manager';
 import { TokenSearchResultDto } from './dto/token-search.dto';
+import { OracleService } from '../oracle/oracle.service';
 
 interface DexScreenerPair {
   chainId: string;
@@ -48,7 +49,31 @@ const FETCH_TIMEOUT_MS = 8_000;
 export class TokensService {
   private readonly logger = new Logger(TokensService.name);
 
-  constructor(@Inject(CACHE_MANAGER) private readonly cache: Cache) {}
+  constructor(
+    @Inject(CACHE_MANAGER) private readonly cache: Cache,
+    @Optional() private readonly oracleService?: OracleService,
+  ) {}
+
+  async getTokenPrice(symbol: string): Promise<{
+    price: number | null;
+    sources: string[];
+    confidence: string;
+  } | null> {
+    if (!this.oracleService) {
+      return null;
+    }
+
+    const aggregated = await this.oracleService.getAggregatedPrice(symbol);
+    if (!aggregated) {
+      return null;
+    }
+
+    return {
+      price: aggregated.price,
+      sources: aggregated.sources,
+      confidence: aggregated.confidence,
+    };
+  }
 
   async search(query: string): Promise<TokenSearchResultDto[]> {
     const sanitized = query.trim();

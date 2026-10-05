@@ -5,7 +5,12 @@ describe('buildMockAnalytics', () => {
   it('is deterministic for a given wallet', () => {
     const a = buildMockAnalytics('0xabc');
     const b = buildMockAnalytics('0xabc');
-    expect(a).toEqual(b);
+    // Check deterministic values (reputation values, accuracy prices, pnl prices)
+    // Timestamps use Date.now() so they differ between calls
+    expect(a.reputation).toEqual(b.reputation);
+    expect(a.accuracy.map(p => p.price)).toEqual(b.accuracy.map(p => p.price));
+    expect(a.pnl.map(p => p.price)).toEqual(b.pnl.map(p => p.price));
+    expect(a.stakingVolume).toEqual(b.stakingVolume);
   });
 
   it('produces different data for different wallets', () => {
@@ -14,9 +19,9 @@ describe('buildMockAnalytics', () => {
     expect(a.reputation).not.toEqual(b.reputation);
   });
 
-  it('returns five reputation axes bounded 0–100', () => {
+  it('returns six reputation axes bounded 0–100', () => {
     const { reputation } = buildMockAnalytics('wallet');
-    expect(reputation).toHaveLength(5);
+    expect(reputation).toHaveLength(6);
     for (const axis of reputation) {
       expect(axis.value).toBeGreaterThanOrEqual(0);
       expect(axis.value).toBeLessThanOrEqual(100);

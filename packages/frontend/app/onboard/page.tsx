@@ -58,6 +58,7 @@ export default function OnboardPage() {
                   setWalletAddress(addr);
                   setStep("wallet");
                 }}
+                onFallback={() => setStep("wallet")}
               />
             )}
 

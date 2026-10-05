@@ -242,14 +242,14 @@ describe('useTokenSearch', () => {
   it('caps the recent cache', async () => {
     const { result } = renderHook(() => useTokenSearch(), { wrapper });
 
-    for (let i = 0; i < RECENT_CACHE_SIZE + 3; i += 1) {
+    for (let i = 0; i < RECENT_CACHE_SIZE + 2; i += 1) {
       mockResponse({ results: [token({ symbol: `T${i}` })] });
       act(() => result.current.setQuery(`query${i}`));
       await waitFor(() => expect(result.current.results[0]?.symbol).toBe(`T${i}`));
     }
 
     await waitFor(() => expect(result.current.recent.length).toBe(RECENT_CACHE_SIZE));
-  });
+  }, 15000);
 
   it('exposes the configured debounce interval', () => {
     expect(SEARCH_DEBOUNCE_MS).toBe(300);

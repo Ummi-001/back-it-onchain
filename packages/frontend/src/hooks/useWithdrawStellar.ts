@@ -17,7 +17,11 @@ function mockStellarTxHash(): string {
  * Mock Stellar (Freighter) `withdrawPayout` hook. Mirrors {@link useWithdrawBase}
  * but produces a Stellar transaction hash and stellar.expert link. Frontend-only.
  */
-export function useWithdrawStellar(): UseWithdrawResult {
+export interface UseWithdrawStellarOptions {
+  execute?: (amount: number) => Promise<{ txHash: string }>;
+}
+
+export function useWithdrawStellar(options: UseWithdrawStellarOptions = {}): UseWithdrawResult {
   const [status, setStatus] = useState<WithdrawStatus>('idle');
   const [receipt, setReceipt] = useState<WithdrawReceipt | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -30,8 +34,7 @@ export function useWithdrawStellar(): UseWithdrawResult {
       if (amount <= 0) {
         throw new Error('Nothing to claim');
       }
-      await new Promise((r) => setTimeout(r, 50));
-      const txHash = mockStellarTxHash();
+      const txHash = options.execute ? (await options.execute(amount)).txHash : mockStellarTxHash();
       const built: WithdrawReceipt = {
         txHash,
         explorerUrl: explorerTxUrl('stellar', txHash),
@@ -47,7 +50,7 @@ export function useWithdrawStellar(): UseWithdrawResult {
       setStatus('error');
       throw e;
     }
-  }, []);
+  }, [options.execute]);
 
   const reset = useCallback(() => {
     setStatus('idle');

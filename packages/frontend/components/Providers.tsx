@@ -21,6 +21,8 @@ import { GlobalStateProvider } from "./GlobalState";
 import { NetworkGuard } from "./NetworkGuard";
 import { StellarWalletProvider } from "./StellarWalletProvider";
 import { ChainProvider } from "./ChainProvider";
+import { WalletSessionProvider } from "@/src/context/WalletContext";
+import { BaseWalletSessionBridge } from "@/src/components/BaseWalletSessionBridge";
 
 // Local Anvil chain definition
 const localhost: Chain = {
@@ -79,9 +81,11 @@ export function Providers(props: {
           >
             <NetworkGuard>
               <StellarWalletProvider>
-                {/* Global application state */}
-                <GlobalStateProvider>{props.children}</GlobalStateProvider>
-                <Toaster position="top-right" closeButton />
+                <WalletSessionProvider>
+                  <BaseWalletSessionBridge />
+                  <GlobalStateProvider>{props.children}</GlobalStateProvider>
+                  <Toaster position="top-right" closeButton />
+                </WalletSessionProvider>
               </StellarWalletProvider>
             </NetworkGuard>
           </OnchainKitProvider>

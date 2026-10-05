@@ -5,6 +5,12 @@ import Link from "next/link";
 import { AppLayout } from "@/components/AppLayout";
 import { TrendingUp, Award, Wallet } from 'lucide-react';
 import { useGlobalState } from "@/components/GlobalState";
+import { PortfolioSummary, type PortfolioPosition } from "@/src/components/PortfolioSummary";
+import { BulkClaimWizard, type BulkClaimPosition } from "@/src/components/BulkClaimWizard";
+import { useWithdrawBase } from "@/src/hooks/useWithdrawBase";
+import { useWithdrawStellar } from "@/src/hooks/useWithdrawStellar";
+import { explorerTxUrl } from "@/src/lib/payout-utils";
+import { AssetBridgeModal } from "@/src/components/AssetBridgeModal";
 
 const API_BASE_URL = (
     process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:3001"
@@ -46,8 +52,12 @@ function getTimeRemaining(endTs: string | number): string {
 export default function PortfolioPage() {
     const { currentUser } = useGlobalState();
     const [activeTab, setActiveTab] = useState<'active' | 'past' | 'claimable'>('active');
-    const [stakes, setStakes] = useState<Stake[]>([]);
-    const [isLoading, setIsLoading] = useState(true);
+     const [stakes, setStakes] = useState<Stake[]>([]);
+     const [isLoading, setIsLoading] = useState(true);
+     const [claimWizardOpen, setClaimWizardOpen] = useState(false);
+     const [bridgeOpen, setBridgeOpen] = useState(false);
+     const baseWithdraw = useWithdrawBase();
+     const stellarWithdraw = useWithdrawStellar();
 
     // Fetch user's stakes from backend
     useEffect(() => {
@@ -183,6 +193,24 @@ export default function PortfolioPage() {
     const wins = stakes.filter(s => s.result === 'won').length;
     const winRate = totalSettled > 0 ? (wins / totalSettled) * 100 : 0;
 
+    const portfolioPositions: PortfolioPosition[] = stakes.map((stake) => ({
+        id: stake.id,
+        callId: stake.id,
+        title: stake.title,
+        chain: stake.chain,
+        side: stake.choice,
+        amount: stake.amount,
+        payout: stake.payout,
+        currentValue: stake.status === 'active' ? stake.amount : stake.payout,
+        status: stake.status === 'claimable' ? 'claimable' : stake.status === 'active' ? 'active' : stake.result === 'won' ? 'won' : 'lost',
+    }));
+
+    const claimPositions: BulkClaimPosition[] = portfolioPositions.filter((position) => position.status === 'claimable').map((position) => ({ id: position.id, title: position.title, amount: position.payout || position.amount, chain: position.chain }));
+    const claimPosition = async (position: BulkClaimPosition) => {
+        const receipt = position.chain === 'base' ? await baseWithdraw.withdraw(position.amount) : await stellarWithdraw.withdraw(position.amount);
+        return { txHash: receipt.txHash };
+    };
+
     const currentStakes = activeTab === 'active' ? activeStakes : activeTab === 'past' ? pastStakes : claimableStakes;
 
     const RightSidebar = (
@@ -213,7 +241,8 @@ export default function PortfolioPage() {
         <AppLayout rightSidebar={RightSidebar}>
             <div className="p-4">
                 <h1 className="text-2xl font-bold mb-1">Portfolio</h1>
-                <p className="text-muted-foreground text-sm mb-6">Track your positions, performance, and rewards</p>
+                <div className="mb-6 flex items-center justify-between gap-3"><p className="text-muted-foreground text-sm">Track your positions, performance, and rewards</p><button type="button" onClick={() => setBridgeOpen(true)} className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-secondary">Bridge assets</button></div>
+                <PortfolioSummary positions={portfolioPositions} className="mb-6" onClaimAll={() => setClaimWizardOpen(true)} />
 
                 {/* Tabs */}
                 <div className="flex gap-1 mb-6 border-b border-border">
@@ -278,6 +307,8 @@ export default function PortfolioPage() {
                     )}
                 </div>
             </div>
+            <BulkClaimWizard open={claimWizardOpen} onOpenChange={setClaimWizardOpen} positions={claimPositions} onClaim={claimPosition} explorerUrl={(txHash, chain) => explorerTxUrl(chain, txHash)} />
+            <AssetBridgeModal open={bridgeOpen} onOpenChange={setBridgeOpen} />
         </AppLayout>
     );
 }

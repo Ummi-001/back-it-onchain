@@ -4,13 +4,14 @@ import { BadgeState, RARITY_STYLES } from '../lib/badge-defs';
 
 interface BadgeCardProps {
   state: BadgeState;
+  onSelect?: (state: BadgeState) => void;
 }
 
 /**
  * A single achievement badge. Renders locked (greyscale) or unlocked (full
  * colour + celebration animation) with a progress bar and hover tooltip.
  */
-export function BadgeCard({ state }: BadgeCardProps) {
+export function BadgeCard({ state, onSelect }: BadgeCardProps) {
   const { definition, unlocked, percent, current, remaining } = state;
   const rarity = RARITY_STYLES[definition.rarity];
 
@@ -23,6 +24,10 @@ export function BadgeCard({ state }: BadgeCardProps) {
       data-testid={`badge-${definition.id}`}
       data-unlocked={unlocked}
       title={tooltip}
+      role="button"
+      tabIndex={0}
+      onClick={() => onSelect?.(state)}
+      onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onSelect?.(state); } }}
       className={cn(
         'group relative flex flex-col items-center gap-2 rounded-xl border border-white/10 bg-zinc-900/60 p-4 ring-1 transition',
         rarity.ring,

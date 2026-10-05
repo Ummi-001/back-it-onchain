@@ -21,6 +21,8 @@ import { MarketDetailSkeleton } from "@/components/MarketDetailSkeleton";
 import { MarketDetailRightSidebarSkeleton } from "@/components/MarketDetailRightSidebarSkeleton";
 import { PoolBar } from "@/src/components/PoolBar";
 import { ParticipantList } from "@/src/components/ParticipantList";
+import { PoolLiquidityDepth } from "@/src/components/PoolLiquidityDepth";
+import { SocialCardGenerator } from "@/src/components/SocialCardGenerator";
 import { CallCountdownTimeline } from "@/src/components/CallCountdownTimeline";
 import { DisputeThread } from "@/src/components/DisputeThread";
 import { createMockCallSocket, useCallLive, poolSplit } from "@/src/hooks/useCallLive";
@@ -227,6 +229,7 @@ export default function CallDetailPage() {
                         </div>
 
                         <PoolBar pool={live.pool} />
+                        <PoolLiquidityDepth pool={live.pool} />
 
                         {/*
                           The bar above moves silently as socket updates land.
@@ -317,6 +320,18 @@ export default function CallDetailPage() {
                                         Share to X
                                     </button>
                                 </div>
+                                <SocialCardGenerator
+                                    className="mt-4"
+                                    data={{
+                                        title: shareTitle,
+                                        creator: call.creator?.displayName || call.creator?.wallet,
+                                        token: call.asset,
+                                        target: call.target,
+                                        yesPercent: live.yesPercent,
+                                        noPercent: live.noPercent,
+                                        url: typeof window !== 'undefined' ? window.location.href : undefined,
+                                    }}
+                                />
                             </Dialog.Content>
                         </Dialog.Portal>
                     </Dialog.Root>

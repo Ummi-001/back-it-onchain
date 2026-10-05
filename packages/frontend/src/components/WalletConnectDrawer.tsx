@@ -4,10 +4,15 @@ import { useState } from "react";
 import { Wallet, X, Loader2, LogOut } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { useWallet } from "@/hooks/useWallet";
+import { useStellarWallet } from "@/components/StellarWalletProvider";
+import { useStellarAssets } from "@/src/hooks/useStellarAssets";
+import { StellarAssetList } from "@/src/components/StellarAssetList";
 
 export function WalletConnectDrawer() {
   const [isOpen, setIsOpen] = useState(false);
   const { isConnected, address, chain, status, connect, disconnect } = useWallet();
+  const stellar = useStellarWallet();
+  const stellarAssets = useStellarAssets(stellar.publicKey, stellar.networkDetails?.networkUrl);
   
   return (
     <>
@@ -42,6 +47,14 @@ export function WalletConnectDrawer() {
                   <p className="text-xs text-muted-foreground mb-1">Chain</p>
                   <p className="text-sm font-medium capitalize">{chain}</p>
                 </div>
+                {stellar.publicKey ? (
+                  <StellarAssetList
+                    assets={stellarAssets.assets}
+                    loading={stellarAssets.loading}
+                    error={stellarAssets.error}
+                    onRefresh={stellarAssets.refresh}
+                  />
+                ) : null}
                 <div className="bg-green-500/10 rounded-lg p-3 border border-green-500/20">
                   <p className="text-sm text-green-500 flex items-center gap-2">
                     <span className="h-2 w-2 rounded-full bg-green-500 animate-pulse" />

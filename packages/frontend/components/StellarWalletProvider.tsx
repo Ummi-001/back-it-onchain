@@ -20,6 +20,7 @@ import {
   StellarNetwork,
   NetworkDetails,
 } from "@/lib/stellar-wallet-adapter";
+import { useWalletSessions } from "@/src/context/WalletContext";
 
 /**
  * Context value interface
@@ -108,6 +109,7 @@ export function StellarWalletProvider({
     null,
   );
   const [isConnecting, setIsConnecting] = useState<boolean>(false);
+  const { setSession, clearSession } = useWalletSessions();
 
   /**
    * Check if Freighter is installed on component mount
@@ -140,18 +142,20 @@ export function StellarWalletProvider({
           const details = await adapter.getNetworkDetails();
           setNetwork(details.network);
           setNetworkDetails(details);
+          setSession('stellar', adapter.getPublicKey() || '', details.network);
         }
       } catch (error) {
         console.error("Error restoring Stellar wallet connection:", error);
         // If restoration fails, clear the state
         adapter.disconnect();
-        setPublicKey(null);
-        setIsConnected(false);
-      }
+         setPublicKey(null);
+         setIsConnected(false);
+         clearSession('stellar');
+       }
     };
 
     restoreConnection();
-  }, [adapter]);
+  }, [adapter, clearSession, setSession]);
 
   /**
    * Connect to Freighter wallet
@@ -174,10 +178,11 @@ export function StellarWalletProvider({
 
       // Fetch network details
       const details = await adapter.getNetworkDetails();
-      setNetwork(details.network);
-      setNetworkDetails(details);
+       setNetwork(details.network);
+       setNetworkDetails(details);
+       setSession('stellar', address, details.network);
 
-      console.log("Connected to Stellar wallet:", address);
+       console.log("Connected to Stellar wallet:", address);
     } catch (error) {
       console.error("Error connecting to Stellar wallet:", error);
 
@@ -189,7 +194,7 @@ export function StellarWalletProvider({
     } finally {
       setIsConnecting(false);
     }
-  }, [adapter, isFreighterInstalled]);
+  }, [adapter, isFreighterInstalled, setSession]);
 
   /**
    * Disconnect from Freighter wallet
@@ -199,11 +204,12 @@ export function StellarWalletProvider({
     adapter.disconnect();
     setPublicKey(null);
     setIsConnected(false);
-    setNetwork("TESTNET");
-    setNetworkDetails(null);
+     setNetwork("TESTNET");
+     setNetworkDetails(null);
+     clearSession("stellar");
 
-    console.log("Disconnected from Stellar wallet");
-  }, [adapter]);
+     console.log("Disconnected from Stellar wallet");
+   }, [adapter, clearSession]);
 
   /**
    * Switch network (Note: This requires user to manually change network in Freighter)
@@ -229,14 +235,15 @@ export function StellarWalletProvider({
         // We can update our local state to reflect the desired network
         // and refresh the network details
         const details = await adapter.getNetworkDetails();
-        setNetwork(details.network);
-        setNetworkDetails(details);
-      } catch (error) {
+         setNetwork(details.network);
+         setNetworkDetails(details);
+         if (adapter.getPublicKey()) setSession('stellar', adapter.getPublicKey() || '', details.network);
+       } catch (error) {
         console.error("Error switching network:", error);
         throw error;
       }
     },
-    [adapter],
+    [adapter, setSession],
   );
 
   /**
